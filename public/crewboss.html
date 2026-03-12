@@ -1,58 +1,533 @@
-const https = require('https');
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no"/>
+<meta name="mobile-web-app-capable" content="yes"/>
+<meta name="apple-mobile-web-app-capable" content="yes"/>
+<meta name="theme-color" content="#0d1b2a"/>
+<title>CREWBOSS</title>
+<link href="https://fonts.googleapis.com/css2?family=Syne:wght@800&family=DM+Mono:wght@400;500&display=swap" rel="stylesheet"/>
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+html,body{height:100%;background:#0d1b2a}
+body{font-family:'DM Mono',monospace;-webkit-tap-highlight-color:transparent;overflow:hidden}
+#root{height:100dvh;display:flex;flex-direction:column;max-width:480px;margin:0 auto;position:relative;overflow:hidden}
+button{cursor:pointer;font-family:'DM Mono',monospace;-webkit-tap-highlight-color:transparent}
+input,textarea{font-family:'DM Mono',monospace;outline:none}
+textarea{resize:none}
+.scroll{overflow-y:auto;-webkit-overflow-scrolling:touch}
+@keyframes blink{0%,100%{opacity:.1}50%{opacity:1}}
+@keyframes up{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:translateY(0)}}
+@keyframes scan{0%,100%{top:15%}50%{top:80%}}
+.msg{animation:up .18s ease forwards}
+</style>
+</head>
+<body>
+<div id="root"></div>
+<script>
+'use strict';
 
-exports.handler = async function(event, context) {
-  if (event.httpMethod !== 'POST') {
-    return { statusCode: 405, body: 'Method not allowed' };
-  }
+/* ── theme ── */
+var D={bg:'#0d1b2a',sur:'#111f30',bor:'#1a2f45',yel:'#e2ff00',red:'#ff3b30',txt:'#e8f0f8',mut:'#4a6278',dim:'#1e3347',mbg:'rgba(0,0,0,.18)',ibg:'#0d1b2a'};
+var L={bg:'#f0f4f8',sur:'#ffffff',bor:'#d1dde8',yel:'#b85c00',red:'#cc1100',txt:'#0d1b2a',mut:'#5a7290',dim:'#c0ccd8',mbg:'rgba(0,0,0,.05)',ibg:'#ffffff'};
+function T(k){return(S.dark?D:L)[k]}
 
-  try {
-    const body = JSON.parse(event.body);
-    const { apiKey, model, system, messages, tools, max_tokens } = body;
+/* ── localStorage ── */
+function lg(k){try{var v=localStorage.getItem(k);return v!=null?JSON.parse(v):null}catch(e){return null}}
+function ls(k,v){try{localStorage.setItem(k,JSON.stringify(v))}catch(e){}}
 
-    if (!apiKey || !messages) {
-      return { statusCode: 400, body: JSON.stringify({ error: 'Missing required fields' }) };
-    }
-
-    const payload = JSON.stringify({
-      model: model || 'claude-haiku-4-5-20251001',
-      max_tokens: max_tokens || 1024,
-      system,
-      messages,
-      betas: body.betas
-    });
-
-    const result = await new Promise((resolve, reject) => {
-      const req = https.request({
-        hostname: 'api.anthropic.com',
-        path: '/v1/messages',
-        method: 'POST',
-        headers: {
-          'x-api-key': apiKey,
-          'anthropic-version': '2023-06-01',
-          'anthropic-beta': 'files-api-2025-04-14',
-          'Content-Type': 'application/json',
-          'Content-Length': Buffer.byteLength(payload),
-        }
-      }, (res) => {
-        let data = '';
-        res.on('data', chunk => data += chunk);
-        res.on('end', () => resolve({ status: res.statusCode, body: data }));
-      });
-      req.on('error', reject);
-      req.write(payload);
-      req.end();
-    });
-
-    return {
-      statusCode: result.status,
-      headers: { 'Content-Type': 'application/json' },
-      body: result.body,
-    };
-
-  } catch (err) {
-    return {
-      statusCode: 500,
-      body: JSON.stringify({ error: err.message })
-    };
-  }
+/* ── state ── */
+var S={
+  dark:   lg('cb:dark')!==false,
+  tab:    'ask',
+  menu:   false,
+  cfg:    false,
+  apiKey: lg('cb:ak')||'',
+  collId: lg('cb:ci')||'',
+  appUrl: lg('cb:au')||'',
+  msgs:   [],
+  input:  '',
+  busy:   false,
+  unit:   null,
+  fileId: null,
+  favs:   lg('cb:favs')||[],
+  scanOpen: false,
+  scanning: false,
+  scanErr:  null,
+  saveOk:   false,
 };
+var camStream=null;
+
+/* ── mock data ── */
+var MANUALS=[
+  {file:'3D.PDF',        unit:'3D',      title:'3D Manual',      fileId:'file_011CYvfuhdfNnYkuKphLFSqw', upd:'2024'},
+  {file:'cutting_bug',   unit:'CUTTING', title:'Cutting Bug',    fileId:'file_011CYvg8r5n92B7aPFvPb9TS', upd:'2024'},
+  {file:'1016999',       unit:'1016999', title:'1016999 Manual', fileId:'file_011CYvgYEptQVKtNWeYFFLKt', upd:'2024'},
+];
+var MOCK={
+  '5':{
+    start:'UNIT 05 — Pump Startup\nSection 4.1, p.41\n\n1. Open suction valve fully (8 turns CCW)\n2. Check oil — between MIN/MAX\n3. Crack discharge valve (2 turns)\n4. Energize via MCC breaker #5-B\n5. Allow 30s idle before opening discharge\n6. Confirm inlet pressure 12–18 PSI within 90s\n\n⚠ If pressure not reached — shut down, check cavitation.',
+    vibrat:'UNIT 05 — Vibration Limits\nSection 8.3, p.88\n\nNormal    < 0.15 in/s RMS\nWarning   0.15–0.30 in/s RMS\nShutdown  > 0.30 in/s RMS\n\nCauses: impeller wear, bearing failure, cavitation.',
+    oil:'UNIT 05 — Lubrication\nSection 6.2, p.61\n\nBearing housing  Mobil SHC 630  500 hrs\nMech seal        SAE 30W        Weekly\nCoupling         Never-Seez     Annual\n\nCapacity: 2.4 L — purge before refilling.',
+  },
+  '1':{
+    ppe:'UNIT 01 — PPE Requirements\nSection 3.2, p.34\n\n· Hard hat (Class E)\n· Safety glasses with side shields\n· Steel-toed boots (75 ft-lbs)\n· Hi-vis vest near traffic\n\n⚠ Never bypass LOTO on Unit 01.',
+    emergency:'UNIT 01 — Emergency Shutdown\nSection 7.4, p.72\n\n1. Press red E-STOP on panel\n2. Confirm all lights RED within 3s\n3. Radio: "Unit 01 Emergency Shutdown"\n4. Do NOT restart without written clearance.',
+  },
+  '42':{electr:'UNIT 42 — Electrical Panel\nSection 5.3, p.54\n\n480V 3-phase 60Hz\nMain: 400A ABB E4.2\n\nCB-1  Pump Motor 1   150A\nCB-2  Pump Motor 2   150A\nCB-3  HVAC           60A\nCB-4  Lighting       20A\n\n⚠ Qualified workers only.'},
+  '17':{valve:'UNIT 17 — Valve Override\nSection 2.1, p.18\n\n1. Isolate air at solenoid block\n2. Tag out per LOTO\n3. Insert manual override key\n4. CW=CLOSED · CCW=OPEN\n5. Max 45 ft-lbs torque'},
+};
+function getAns(unit,q){
+  var u=unit.replace(/^0+/,''),t=q.toLowerCase(),b=MOCK[u];
+  if(!b) return null;
+  for(var k in b){if(t.indexOf(k)>=0)return b[k]}
+  if(u==='5'&&(t.indexOf('pump')>=0||t.indexOf('start')>=0))return b.start;
+  if(u==='1'&&(t.indexOf('safe')>=0||t.indexOf('hazard')>=0))return b.ppe;
+  if(u==='42'&&(t.indexOf('break')>=0||t.indexOf('volt')>=0||t.indexOf('power')>=0))return b.electr;
+  if(u==='17'&&(t.indexOf('open')>=0||t.indexOf('clos')>=0))return b.valve;
+  return 'UNIT '+unit.toUpperCase()+' — General\n\n1. Follow pre-op checks in Section 3\n2. Ensure safety interlocks active\n3. Document actions in ops log\n4. Contact site engineer if out of spec.';
+}
+
+/* ── QR mini ── */
+function makeQR(seed,sz){
+  sz=sz||52;
+  var n=seed.split('').reduce(function(a,c){return(a*31+c.charCodeAt(0))>>>0},0);
+  var cells=9,cs=sz/cells;
+  var ns='http://www.w3.org/2000/svg';
+  var svg=document.createElementNS(ns,'svg');
+  svg.setAttribute('width',sz);svg.setAttribute('height',sz);
+  svg.style.cssText='border-radius:3px;display:block;flex-shrink:0';
+  var bg=document.createElementNS(ns,'rect');
+  bg.setAttribute('width',sz);bg.setAttribute('height',sz);
+  bg.setAttribute('fill',S.dark?'#0d1b2a':'#f0f4f8');
+  svg.appendChild(bg);
+  var fill=S.dark?'#e2ff00':'#b85c00';
+  for(var r=0;r<cells;r++){
+    for(var c=0;c<cells;c++){
+      var on=(r<=1&&c<=1)||(r<=1&&c>=cells-2)||(r>=cells-2&&c<=1)||(((n*(r+2)*(c+3)*2654435761)>>>0)%3!==0);
+      if(on){
+        var rect=document.createElementNS(ns,'rect');
+        rect.setAttribute('x',c*cs);rect.setAttribute('y',r*cs);
+        rect.setAttribute('width',cs-0.8);rect.setAttribute('height',cs-0.8);
+        rect.setAttribute('fill',fill);rect.setAttribute('rx','0.5');
+        svg.appendChild(rect);
+      }
+    }
+  }
+  return svg;
+}
+
+/* ── dom helpers ── */
+function h(tag,style,children,events){
+  var e=document.createElement(tag);
+  if(style) Object.assign(e.style,style);
+  if(children) children.forEach(function(c){
+    if(c==null)return;
+    if(typeof c==='string')e.appendChild(document.createTextNode(c));
+    else e.appendChild(c);
+  });
+  if(events) for(var ev in events) e.addEventListener(ev,events[ev]);
+  return e;
+}
+function div(s,c,ev){return h('div',s,c,ev)}
+function btn(s,c,ev){return h('button',s,c,ev)}
+function spn(s,c){return h('span',s,c)}
+
+/* ── render ── */
+function R(){
+  var root=document.getElementById('root');
+  root.innerHTML='';
+  root.style.background=T('bg');
+  root.style.color=T('txt');
+
+  if(S.menu){root.appendChild(buildMenu());return}
+
+  root.appendChild(buildHeader());
+  root.appendChild(buildTabBar());
+
+  var content;
+  if(S.tab==='ask')      content=buildAsk();
+  else if(S.tab==='manuals') content=buildManuals();
+  else                   content=buildFavs();
+  root.appendChild(content);
+}
+
+/* ── HEADER ── */
+function buildHeader(){
+  var cfg=!!S.apiKey;
+  return div({display:'flex',alignItems:'center',padding:'10px 12px',borderBottom:'1px solid '+T('bor'),background:T('sur'),flexShrink:'0',gap:'8px',flexWrap:'nowrap'},[
+    /* logo */
+    div({display:'flex',flexDirection:'column',flexShrink:'0'},[
+      div({fontFamily:"'Syne',sans-serif",fontSize:'22px',fontWeight:'800',letterSpacing:'-1px',lineHeight:'1'},[
+        spn({color:S.dark?'#e8f0f8':'#0d1b2a'},['CREW']),
+        spn({color:'#ff3b30'},['BOSS']),
+      ]),
+      div({fontSize:'10px',color:'#ff3b30',fontWeight:'700',letterSpacing:'1px',marginTop:'1px'},[S.unit?'UNIT '+S.unit:'15-01']),
+    ]),
+    div({flex:'1'}),
+    /* status dot */
+    div({display:'flex',alignItems:'center',gap:'4px',flexShrink:'0'},[
+      div({width:'7px',height:'7px',borderRadius:'50%',background:cfg?'#3fb950':T('mut'),flexShrink:'0'}),
+      spn({fontSize:'7px',color:cfg?'#3fb950':T('mut'),fontWeight:'700',whiteSpace:'nowrap'},[cfg?'CONNECTED':'NOT CONNECTED']),
+    ]),
+    /* MENU — big, red, impossible to miss */
+    btn({
+      background:'#ff3b30',border:'none',borderRadius:'5px',
+      padding:'0',width:'44px',height:'44px',
+      fontSize:'22px',fontWeight:'900',color:'#fff',
+      flexShrink:'0',display:'flex',alignItems:'center',justifyContent:'center',
+    },['≡'],{click:function(){S.menu=true;R()}}),
+  ]);
+}
+
+/* ── TAB BAR ── */
+function buildTabBar(){
+  var tabs=[['ask','○ Ask'],['manuals','⊞ Manuals'],['favorites','★ Favs']];
+  return div({display:'flex',borderBottom:'1px solid '+T('bor'),background:T('sur'),flexShrink:'0'},
+    tabs.map(function(t){
+      var active=S.tab===t[0];
+      return btn({
+        flex:'1',padding:'13px 0',fontSize:'10px',fontWeight:'700',letterSpacing:'0.5px',
+        color:active?T('yel'):T('txt'),background:'none',
+        borderBottom:active?'2px solid '+T('yel'):'2px solid transparent',
+        border:'none',borderTop:'none',borderLeft:'none',borderRight:'none',
+      },[t[1]],{click:function(){S.tab=t[0];R()}});
+    })
+  );
+}
+
+/* ── ASK TAB ── */
+function buildAsk(){
+  var wrap=div({flex:'1',display:'flex',flexDirection:'column',overflow:'hidden'});
+  var scroll=div({flex:'1',overflowY:'auto',WebkitOverflowScrolling:'touch'});
+  scroll.className='scroll';
+
+  S.msgs.forEach(function(msg){
+    var m;
+    if(msg.role==='user'){
+      m=div({padding:'14px 16px',borderBottom:'1px solid '+T('bor')},[
+        div({fontSize:'9px',color:T('yel'),fontWeight:'700',letterSpacing:'2px',marginBottom:'5px'},[msg.unit?'UNIT '+msg.unit:'YOU']),
+        div({fontSize:'14px',color:T('txt'),lineHeight:'1.6'},[msg.text]),
+      ]);
+    } else if(msg.role==='bot'){
+      m=div({padding:'14px 16px',borderBottom:'1px solid '+T('bor'),borderLeft:'3px solid '+(msg.found?T('yel'):T('red')),background:T('mbg')},[
+        div({fontSize:'9px',color:msg.found?T('yel'):T('red'),fontWeight:'700',letterSpacing:'2px',marginBottom:'8px'},[msg.found?'⚡ CLAUDE · UNIT '+msg.unit:'⚠ NO RESULTS']),
+        div({fontSize:'13px',color:T('txt'),lineHeight:'1.9',whiteSpace:'pre-wrap'},[msg.text]),
+      ]);
+    } else {
+      m=div({padding:'10px 16px',borderBottom:'1px solid '+T('bor')},[
+        div({fontSize:'11px',color:T('mut')},['↳ '+msg.text]),
+      ]);
+    }
+    m.className='msg';
+    scroll.appendChild(m);
+  });
+
+  if(S.busy){
+    var dots=div({display:'flex',gap:'6px'});
+    [0,1,2].forEach(function(i){
+      var d=div({width:'6px',height:'6px',borderRadius:'50%',background:T('yel'),animation:'blink 1.2s ease infinite',animationDelay:(i*.25)+'s'});
+      dots.appendChild(d);
+    });
+    var ld=div({padding:'14px 16px',borderBottom:'1px solid '+T('bor'),borderLeft:'3px solid '+T('yel'),background:T('mbg')},[
+      div({fontSize:'9px',color:T('yel'),fontWeight:'700',letterSpacing:'2px',marginBottom:'10px'},['CLAUDE SEARCHING…']),dots]);
+    ld.className='msg';
+    scroll.appendChild(ld);
+  }
+  setTimeout(function(){scroll.scrollTop=99999},30);
+  wrap.appendChild(scroll);
+
+  /* input */
+  var ta=document.createElement('textarea');
+  ta.rows=2; ta.value=S.input;
+  ta.placeholder='Ask a question or type unit #';
+  Object.assign(ta.style,{flex:'1',background:T('ibg'),border:'1px solid '+T('bor'),color:T('txt'),borderRadius:'6px',padding:'11px 13px',fontSize:'14px',lineHeight:'1.5'});
+  ta.addEventListener('input',function(){S.input=this.value});
+  ta.addEventListener('keydown',function(e){if(e.key==='Enter'&&!e.shiftKey){e.preventDefault();doAsk()}});
+
+  // placeholder colour via style tag
+  var ps=document.getElementById('ph-style');
+  if(!ps){ps=document.createElement('style');ps.id='ph-style';document.head.appendChild(ps)}
+  ps.textContent='textarea::placeholder{color:'+T('red')+' !important}';
+
+  var askBtn=btn({background:T('red'),color:'#fff',border:'none',borderRadius:'6px',padding:'0 18px',height:'62px',fontSize:'12px',fontWeight:'800',letterSpacing:'1.5px',flexShrink:'0'},['ASK'],{click:doAsk});
+
+  wrap.appendChild(div({borderTop:'1px solid '+T('bor'),background:T('sur'),padding:'10px 12px 24px',flexShrink:'0',paddingBottom:'env(safe-area-inset-bottom, 24px)'},[
+    div({display:'flex',gap:'8px',alignItems:'flex-end'},[ta,askBtn]),
+  ]));
+  return wrap;
+}
+
+function doAsk(){
+  var raw=(S.input||'').trim();
+  if(!raw||S.busy)return;
+  // Try to match a known manual keyword first
+  var manual = MANUALS.find(function(m){ return raw.toLowerCase().indexOf(m.unit.toLowerCase())!==-1; });
+  var unit = manual ? manual.unit : S.unit;
+  if(!unit){S.msgs.push({role:'sys',text:'Include a unit name — e.g. "3D specs" or "1016999 startup"'});R();return}
+  S.unit=unit;
+  if(manual) S.fileId=manual.fileId;
+  S.msgs.push({role:'user',text:raw,unit:unit}); S.input=''; S.busy=true; R();
+
+  // If API key configured — call Claude Haiku
+  if(S.apiKey && S.fileId){
+    var prompt='You are a field manual assistant. The user is asking about Unit '+unit+'. Only answer using documents related to Unit '+unit+' in the collection. Be concise and practical. If you cannot find relevant information for Unit '+unit+', say exactly: NOT_FOUND\n\nQuestion: '+raw;
+    fetch('/.netlify/functions/ask',{
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({
+        apiKey:S.apiKey,
+        model:'claude-haiku-4-5-20251001',
+        max_tokens:1024,
+        system:'You are CREWBOSS, a field manual assistant for industrial unit maintenance. Answer only from the provided documents. Be direct and practical. Format answers clearly with numbered steps where applicable.',
+        messages:[{role:'user',content:[
+          {type:'document',source:{type:'file',file_id:S.fileId}},
+          {type:'text',text:prompt}
+        ]}],
+        betas:['files-api-2025-04-14']
+      })
+    })
+    .then(function(r){return r.json()})
+    .then(function(data){
+      var text='';
+      if(data.content && data.content.length){
+        data.content.forEach(function(c){if(c.type==='text')text+=c.text});
+      } else if(data.error){
+        text='API Error: '+data.error.message;
+      }
+      text=text.trim();
+      var notFound=!text||text.indexOf('NOT_FOUND')>=0||text.indexOf('no information')>=0||text.indexOf('cannot find')>=0;
+      S.msgs.push({role:'bot',unit:unit,found:!notFound,text:notFound?"I don't know, I'm on break.\n\nAsk Dukart — better yet, ask Martin. 🤷":text});
+      S.busy=false; R();
+    })
+    .catch(function(err){
+      S.msgs.push({role:'bot',unit:unit,found:false,text:'Connection error — check your API key and internet connection.\n\n'+err.message});
+      S.busy=false; R();
+    });
+
+  } else {
+    // No API key — fall back to demo answers
+    setTimeout(function(){
+      var ans=getAns(unit,raw);
+      S.msgs.push({role:'bot',unit:unit,found:!!ans,text:ans||"I don't know, I'm on break.\n\nAsk Dukart — better yet, ask Martin. 🤷"});
+      S.busy=false; R();
+    },900+Math.random()*600);
+  }
+}
+
+/* ── MANUALS TAB ── */
+function parseManualName(filename){
+  // Extract unit number and title from filename
+  // e.g. "Unit_05_Pump_Manual.pdf" -> unit:"5", title:"Pump Manual"
+  // e.g. "unit5_pump.pdf" -> unit:"5", title:"pump"
+  var base = filename.replace(/\.pdf$/i,'').replace(/[-_]/g,' ');
+  var unitMatch = base.match(/unit\s*(\d+)/i);
+  var unit = unitMatch ? String(parseInt(unitMatch[1])) : '?';
+  var title = base.replace(/unit\s*\d+\s*/i,'').trim();
+  title = title.charAt(0).toUpperCase() + title.slice(1);
+  if(!title) title = filename.replace(/\.pdf$/i,'');
+  return {unit:unit, title:title};
+}
+
+function buildManuals(){
+  var wrap=div({flex:'1',overflowY:'auto',WebkitOverflowScrolling:'touch',display:'flex',flexDirection:'column'});
+  wrap.className='scroll';
+
+  MANUALS.forEach(function(m){
+    var row=div({display:'flex',alignItems:'center',padding:'16px',borderBottom:'1px solid '+T('bor'),gap:'12px',cursor:'pointer'},[
+      div({flex:'1',minWidth:'0'},[
+        div({fontSize:'9px',color:T('yel'),fontWeight:'700',letterSpacing:'2px',marginBottom:'3px'},[m.unit]),
+        div({fontSize:'14px',color:T('txt'),fontWeight:'600',marginBottom:'3px',whiteSpace:'nowrap',overflow:'hidden',textOverflow:'ellipsis'},[m.title]),
+        div({fontSize:'11px',color:T('mut')},[m.upd]),
+      ]),
+      makeQR(m.file,50),
+    ]);
+    row.addEventListener('click',function(){S.tab='ask';S.unit=m.unit;S.fileId=m.fileId;S.input=m.unit+' ';R()});
+    row.addEventListener('touchstart',function(){this.style.opacity='.6'});
+    row.addEventListener('touchend',function(){this.style.opacity='1'});
+    wrap.appendChild(row);
+  });
+  return wrap;
+}
+
+/* ── FAVORITES TAB ── */
+function buildFavs(){
+  var wrap=div({flex:'1',overflowY:'auto',WebkitOverflowScrolling:'touch',display:'flex',flexDirection:'column'});
+  wrap.className='scroll';
+
+  var fi=document.createElement('input');
+  fi.type='file'; fi.accept='.pdf,.doc,.docx,.txt,.png,.jpg'; fi.multiple=true;
+  fi.style.display='none';
+  fi.addEventListener('change',function(){
+    Array.from(this.files).forEach(function(f){
+      S.favs.unshift({id:Date.now()+Math.random(),name:f.name,size:(f.size/1024).toFixed(0)+' KB',added:new Date().toLocaleDateString(),type:f.name.split('.').pop().toUpperCase()});
+    });
+    ls('cb:favs',S.favs); fi.value=''; R();
+  });
+
+  var zone=div({border:'2px dashed '+T('bor'),borderRadius:'8px',padding:'22px',textAlign:'center',cursor:'pointer'},[
+    div({fontSize:'26px',marginBottom:'7px',opacity:'.35'},['↑']),
+    div({fontSize:'13px',color:T('txt'),fontWeight:'600',marginBottom:'3px'},['Tap to upload a file']),
+    div({fontSize:'10px',color:T('mut')},['PDF, DOC, TXT · stays permanently']),
+  ]);
+  zone.addEventListener('click',function(){fi.click()});
+
+  wrap.appendChild(div({padding:'16px',borderBottom:'1px solid '+T('bor'),background:T('sur')},[
+    div({fontSize:'9px',color:T('yel'),fontWeight:'700',letterSpacing:'2px',marginBottom:'10px'},['★ PERSONAL UPLOADS · '+S.favs.length+' saved']),
+    zone, fi,
+  ]));
+
+  if(S.favs.length===0){
+    wrap.appendChild(div({flex:'1',display:'flex',flexDirection:'column',alignItems:'center',justifyContent:'center',padding:'40px',textAlign:'center',gap:'10px'},[
+      div({fontSize:'34px',opacity:'.08'},['★']),
+      div({fontSize:'13px',color:T('mut'),lineHeight:'1.8'},['No uploads yet.\nFiles stay here permanently.']),
+    ]));
+  } else {
+    S.favs.forEach(function(f){
+      var row=div({display:'flex',alignItems:'center',padding:'14px 16px',borderBottom:'1px solid '+T('bor'),gap:'12px'},[
+        div({fontSize:'10px',fontWeight:'700',color:T('yel'),background:'rgba(226,255,0,0.07)',border:'1px solid rgba(226,255,0,0.18)',borderRadius:'4px',padding:'3px 7px',flexShrink:'0'},[f.type]),
+        div({flex:'1',minWidth:'0'},[
+          div({fontSize:'13px',color:T('txt'),fontWeight:'600',whiteSpace:'nowrap',overflow:'hidden',textOverflow:'ellipsis',marginBottom:'3px'},[f.name]),
+          div({fontSize:'10px',color:T('mut')},[f.size+' · '+f.added]),
+        ]),
+        btn({background:'none',border:'none',color:T('mut'),fontSize:'20px',padding:'6px 8px',minWidth:'40px',minHeight:'40px'},['✕'],{click:function(){S.favs=S.favs.filter(function(x){return x.id!==f.id});ls('cb:favs',S.favs);R()}}),
+      ]);
+      wrap.appendChild(row);
+    });
+  }
+  return wrap;
+}
+
+/* ── MENU ── */
+function buildMenu(){
+  var cfg=!!S.apiKey;
+  var ov=div({position:'absolute',top:'0',left:'0',right:'0',bottom:'0',background:S.dark?'rgba(13,27,42,0.98)':'rgba(240,244,248,0.98)',zIndex:'200',display:'flex',flexDirection:'column',overflowY:'auto',maxWidth:'480px',margin:'0 auto'});
+  ov.className='scroll';
+
+  /* header */
+  ov.appendChild(div({display:'flex',justifyContent:'space-between',alignItems:'center',padding:'18px 18px 14px',borderBottom:'1px solid '+T('bor')},[
+    div({fontFamily:"'Syne',sans-serif",fontSize:'18px',fontWeight:'800',color:T('txt'),letterSpacing:'1px'},['MENU']),
+    btn({background:'none',border:'none',color:T('mut'),fontSize:'28px',padding:'2px 8px'},['✕'],{click:function(){S.menu=false;S.cfg=false;R()}}),
+  ]));
+
+  /* theme row */
+  ov.appendChild(div({borderBottom:'1px solid '+T('bor')},[
+    btn({width:'100%',display:'flex',alignItems:'center',justifyContent:'space-between',padding:'16px 18px',background:'none',border:'none',color:T('txt')},[
+      spn({fontSize:'11px',fontWeight:'700',letterSpacing:'1.5px',color:T('yel')},[S.dark?'☀️  LIGHT MODE':'🌙  DARK MODE']),
+      spn({fontSize:'11px',color:T('mut')},['TAP TO SWITCH']),
+    ],{click:function(){S.dark=!S.dark;ls('cb:dark',S.dark);R()}}),
+  ]));
+
+  /* configure */
+  var cfgWrap=div({borderBottom:'1px solid '+T('bor')});
+  cfgWrap.appendChild(btn({width:'100%',display:'flex',alignItems:'center',justifyContent:'space-between',padding:'16px 18px',background:'none',border:'none',color:T('txt')},[
+    div({display:'flex',alignItems:'center',gap:'10px'},[
+      spn({fontSize:'11px',fontWeight:'700',letterSpacing:'1.5px',color:T('yel')},['⚙ CONFIGURE']),
+      spn({fontSize:'8px',padding:'2px 7px',borderRadius:'2px',fontWeight:'700',background:cfg?'rgba(63,185,80,.1)':'rgba(255,59,48,.1)',color:cfg?'#3fb950':'#ff3b30',border:'1px solid '+(cfg?'rgba(63,185,80,.3)':'rgba(255,59,48,.3)')},[cfg?'CONNECTED':'NOT CONNECTED']),
+    ]),
+    spn({fontSize:'16px',color:T('mut'),display:'inline-block',transform:S.cfg?'rotate(180deg)':'none'},['▾']),
+  ],{click:function(){S.cfg=!S.cfg;R()}}));
+
+  if(S.cfg){
+    var cfgBody=div({padding:'0 18px 18px',display:'flex',flexDirection:'column',gap:'14px'});
+    [['ANTHROPIC API KEY','sk-ant-...','apiKey','cb:ak'],
+     ['FILE IDs','file-abc123, file-xyz789','collId','cb:ci']
+    ].forEach(function(f){
+      var inp=document.createElement('input');
+      inp.type='text'; inp.placeholder=f[1]; inp.value=S[f[2]];
+      Object.assign(inp.style,{width:'100%',background:T('bg'),border:'1px solid '+T('bor'),color:T('txt'),borderRadius:'6px',padding:'11px 13px',fontSize:'13px'});
+      inp.addEventListener('input',function(){S[f[2]]=this.value;ls(f[3],this.value)});
+      cfgBody.appendChild(div({display:'flex',flexDirection:'column',gap:'6px'},[
+        spn({fontSize:'9px',color:T('mut'),fontWeight:'700',letterSpacing:'2px'},[f[0]]),inp,
+      ]));
+    });
+    var sb=btn({background:S.saveOk?'#3fb950':T('yel'),color:'#0d1b2a',border:'none',borderRadius:'6px',padding:'13px',fontSize:'12px',fontWeight:'700',letterSpacing:'1.5px',transition:'background .2s'},[S.saveOk?'✓ SAVED':'SAVE'],{click:function(){S.saveOk=true;R();setTimeout(function(){S.saveOk=false;R()},2000)}});
+    cfgBody.appendChild(sb);
+    cfgWrap.appendChild(cfgBody);
+  }
+  ov.appendChild(cfgWrap);
+
+  /* QR scanner */
+  ov.appendChild(buildScanSection());
+
+  /* share QR */
+  ov.appendChild(div({padding:'18px',borderBottom:'1px solid '+T('bor')},[
+    div({fontSize:'9px',color:T('mut'),letterSpacing:'2px',marginBottom:'12px',fontWeight:'700'},['SHARE APP']),
+    div({display:'flex',alignItems:'center',gap:'14px'},[
+      makeQR(S.appUrl||'crewboss',70),
+      div({fontSize:'12px',color:T('mut'),lineHeight:'1.9'},['Scan to open\non any phone']),
+    ]),
+  ]));
+
+  ov.appendChild(div({padding:'16px 18px'},[
+    spn({fontSize:'10px',color:T('dim')},['CREWBOSS · 15-01 · Demo Build']),
+  ]));
+
+  return ov;
+}
+
+/* ── SCANNER ── */
+function buildScanSection(){
+  var wrap=div({borderBottom:'1px solid '+T('bor')});
+  wrap.appendChild(btn({width:'100%',display:'flex',alignItems:'center',justifyContent:'space-between',padding:'16px 18px',background:'none',border:'none',color:T('txt')},[
+    spn({fontSize:'11px',fontWeight:'700',letterSpacing:'1.5px',color:T('yel')},['▦ QR SCANNER']),
+    spn({fontSize:'16px',color:T('mut'),display:'inline-block',transform:S.scanOpen?'rotate(180deg)':'none'},['▾']),
+  ],{click:function(){
+    if(S.scanOpen&&camStream){camStream.getTracks().forEach(function(t){t.stop()});camStream=null;S.scanning=false}
+    S.scanOpen=!S.scanOpen;S.scanErr=null;R();
+  }}));
+
+  if(!S.scanOpen) return wrap;
+
+  var body=div({padding:'0 18px 18px',display:'flex',flexDirection:'column',gap:'10px'});
+
+  var box=div({position:'relative',width:'100%',paddingTop:'100%',background:'#000',borderRadius:'8px',overflow:'hidden',border:'1px solid '+T('bor')});
+  var vid=document.createElement('video');
+  vid.setAttribute('playsinline','');vid.muted=true;
+  Object.assign(vid.style,{position:'absolute',top:'0',left:'0',width:'100%',height:'100%',objectFit:'cover',display:S.scanning?'block':'none'});
+  box.appendChild(vid);
+
+  if(!S.scanning){
+    box.appendChild(div({position:'absolute',top:'0',left:'0',right:'0',bottom:'0',display:'flex',flexDirection:'column',alignItems:'center',justifyContent:'center',gap:'8px'},[
+      div({fontSize:'38px',opacity:'.2'},['▦']),
+      div({fontSize:'11px',color:'#aaa',letterSpacing:'1px'},['CAMERA INACTIVE']),
+    ]));
+  } else {
+    [{top:'14px',left:'14px',borderTop:'3px solid '+T('yel'),borderLeft:'3px solid '+T('yel')},
+     {top:'14px',right:'14px',borderTop:'3px solid '+T('yel'),borderRight:'3px solid '+T('yel')},
+     {bottom:'14px',left:'14px',borderBottom:'3px solid '+T('yel'),borderLeft:'3px solid '+T('yel')},
+     {bottom:'14px',right:'14px',borderBottom:'3px solid '+T('yel'),borderRight:'3px solid '+T('yel')},
+    ].forEach(function(s){
+      var c=div(Object.assign({position:'absolute',width:'26px',height:'26px'},s));box.appendChild(c);
+    });
+    box.appendChild(div({position:'absolute',left:'22px',right:'22px',height:'2px',background:T('yel'),opacity:'.7',animation:'scan 2s ease-in-out infinite'}));
+  }
+  body.appendChild(box);
+
+  if(S.scanErr) body.appendChild(div({fontSize:'12px',color:T('red'),padding:'9px 12px',background:'rgba(255,59,48,.08)',border:'1px solid rgba(255,59,48,.2)',borderRadius:'6px'},['⚠ '+S.scanErr]));
+
+  if(!S.scanning){
+    body.appendChild(btn({background:T('yel'),color:'#0d1b2a',border:'none',borderRadius:'6px',padding:'13px',fontSize:'12px',fontWeight:'800',letterSpacing:'1.5px'},['START SCAN'],{click:function(){
+      S.scanErr=null;
+      navigator.mediaDevices.getUserMedia({video:{facingMode:'environment'}}).then(function(stream){
+        camStream=stream;S.scanning=true;R();
+        setTimeout(function(){var v=document.querySelector('#root video');if(v){v.srcObject=stream;v.play()}},80);
+      }).catch(function(){S.scanErr='Camera access denied or unavailable.';R()});
+    }}));
+  } else {
+    body.appendChild(btn({background:'rgba(255,59,48,.12)',color:T('red'),border:'1px solid rgba(255,59,48,.3)',borderRadius:'6px',padding:'13px',fontSize:'12px',fontWeight:'800',letterSpacing:'1.5px'},['STOP'],{click:function(){
+      if(camStream){camStream.getTracks().forEach(function(t){t.stop()});camStream=null}
+      S.scanning=false;R();
+    }}));
+  }
+  body.appendChild(div({fontSize:'10px',color:T('mut')},['Point camera at any QR code.']));
+  wrap.appendChild(body);
+  return wrap;
+}
+
+/* ── go ── */
+R();
+</script>
+</body>
+</html>
