@@ -18,7 +18,7 @@ exports.handler = async function(event, context) {
       max_tokens: max_tokens || 1024,
       system,
       messages,
-      tools
+      betas: body.betas
     });
 
     const result = await new Promise((resolve, reject) => {
